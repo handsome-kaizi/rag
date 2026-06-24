@@ -1,0 +1,11 @@
+# 忽略视频文件
+*.mp4
+# 忽略向量数据库和上传的临时文件
+chroma_db /
+temp_pdf /
+uploads /
+# 忽略 Python 缓存
+__pycache__ /
+*.pyc
+# 忽略环境变量或大文件
+*.env
