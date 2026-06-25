@@ -1,11 +1,68 @@
 # 忽略视频文件
 *.mp4
+
 # 忽略向量数据库和上传的临时文件
-chroma_db /
-temp_pdf /
-uploads /
-# 忽略 Python 缓存
-__pycache__ /
+chroma_db/
+temp_pdf/
+
+# ... existing code ...
+
+# 忽略父子文档映射关系（运行时生成）
+docstore/
+
+# 忽略BM25文档块（运行时生成）
+bm25_chunks.pkl
+
+# 忽略Python缓存
+__pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
 # 忽略环境变量或大文件
 *.env
+.env
+.env.local
+
+# 忽略虚拟环境
+.venv/
+venv/
+env/
+
+# 忽略IDE配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 忽略操作系统文件
+.DS_Store
+Thumbs.db
+
+# 忽略日志文件
+*.log
+
+# 忽略测试文件
+test.txt
+*.test.py
+
+# 忽略备份文件夹
+git1/
+
+# 忽略SQLite数据库
+*.sqlite3
+*.db
+
+# 忽略大型数据文件
+*.pkl
+*.pickle
+
+# 忽略Jupyter Notebook检查点
+.ipynb_checkpoints/
+
+# 忽略coverage报告
+htmlcov/
+.coverage
+.idea/
