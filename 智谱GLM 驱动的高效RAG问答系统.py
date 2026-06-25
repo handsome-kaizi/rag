@@ -1,11 +1,12 @@
 import os
 import shutil
-from fastapi import FastAPI, File, UploadFile, Form
+import pickle
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import HTMLResponse
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter# 1. 进入项目目录
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import ZhipuAIEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from pydantic import BaseModel
 from langchain_community.chat_models import ChatZhipuAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -13,15 +14,16 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 import jieba
 from langchain_community.retrievers import BM25Retriever
-# 如果上面的导入不行，可以尝试这个
 from langchain_classic.retrievers import EnsembleRetriever
-
+from langchain_classic.retrievers import ParentDocumentRetriever
+from langchain_classic.storage import LocalFileStore, create_kv_docstore
 
 
 app = FastAPI()
 # 配置环境变量（请替换为你的实际 Key）
-os.environ["ZHIPUAI_API_KEY"] = "你的智谱API"
+os.environ["ZHIPUAI_API_KEY"] = "c28067c108d442b9b2f06334d5002d41.veZRK4S1AmB4USdJ"
 VECTORDB_DIR = "./chroma_db"
+DOCSTORE_DIR = "./docstore"
 EMBEDDING_MODEL = ZhipuAIEmbeddings(model="embedding-2")
 # 初始化 GLM-4-Flash 模型 (temperature 设为 0.1 以获得更确定的归纳回答)
 LLM_MODEL = ChatZhipuAI(model="glm-4-flash", temperature=0.1)
@@ -50,8 +52,16 @@ def format_docs(docs):
 
 
 # === 新增全局变量：用于存储切好的文本块，供 BM25 使用 ===
-# 实际生产环境中，文档块应持久化存储，这里为 Demo 简化为内存存储
 global_chunks = []
+parent_store = None  # 补充这行，预先声明全局变量
+ #尝试加载之前保存的 BM25 文档块
+BM25_CHUNKS_FILE = "./bm25_chunks.pkl"
+if os.path.exists(BM25_CHUNKS_FILE):
+    with open(BM25_CHUNKS_FILE, 'rb') as file_obj:
+        global_chunks = pickle.load(file_obj)
+    print(f"✅ 已加载 {len(global_chunks)} 个 BM25 文档块")
+else:
+    print("⚠️ 未找到已保存的 BM25 文档块，请先上传 PDF")
 
 
 # === 新增：BM25 中文分词预处理函数 ===
@@ -145,26 +155,56 @@ async def get_index():
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    global global_chunks
-    temp_dir = "./temp_pdf"
-    os.makedirs(temp_dir, exist_ok=True)
-    file_path = os.path.join(temp_dir, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    loader = PyPDFLoader(file_path)
-    documents = loader.load()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    chunks = text_splitter.split_documents(documents)
-    # 关键：将切好的文本块保存到全局变量，供后续 BM25 初始化使用
-    global_chunks = chunks
-    vector_db = Chroma.from_documents(
-        documents=chunks,
-        embedding=EMBEDDING_MODEL,
-        persist_directory=VECTORDB_DIR
-    )
-    os.remove(file_path)
-    return {"message": "PDF 处理成功", "chunk_count": len(chunks)}
-
+    global global_chunks, parent_store
+    try:
+        temp_dir = "./temp_pdf"
+        os.makedirs(temp_dir, exist_ok=True)
+        file_path = os.path.join(temp_dir, file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        # 1. 加载 PDF
+        loader = PyPDFLoader(file_path)
+        documents = loader.load()
+        if not documents or not any(doc.page_content.strip() for doc in documents):
+            raise ValueError("PDF解析内容为空！可能是扫描版图片，PyPDFLoader无法提取文字。")
+        # 2. 优先进行简单分块（用于 BM25），确保 chunks 有值
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        chunks = text_splitter.split_documents(documents)
+        global_chunks = chunks
+        # 3. 立刻持久化保存 BM25 文档块
+        with open(BM25_CHUNKS_FILE, 'wb') as f:
+            pickle.dump(chunks, f)
+        print(f"💾 已保存 {len(chunks)} 个 BM25 文档块到本地")
+        # 4. 再处理父子文档（如果此处报错，不影响 BM25 使用）
+        try:
+            parent_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+            child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=30)
+            vector_db = Chroma(
+                collection_name="parent_child_db",
+                embedding_function=EMBEDDING_MODEL,
+                persist_directory=VECTORDB_DIR
+            )
+            parent_store = create_kv_docstore(LocalFileStore(DOCSTORE_DIR))
+            parent_retriever = ParentDocumentRetriever(
+                vectorstore=vector_db,
+                docstore=parent_store,
+                child_splitter=child_splitter,
+                parent_splitter=parent_splitter,
+            )
+            parent_retriever.add_documents(documents)
+            print("✅ 父子文档检索器构建成功")
+        except Exception as inner_e:
+            print(f"⚠️ 父子文档构建失败（不影响 BM25 检索）：{str(inner_e)}")
+        os.remove(file_path)
+        return {
+            "message": "PDF 处理成功",
+            "chunk_count": len(chunks),
+            "parent_docs_count": len(list(parent_store.yield_keys())) if parent_store else 0
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"detail": f"PDF 处理失败：{str(e)}"}, 500
 
 class QuestionRequest(BaseModel):
     question: str
@@ -172,36 +212,82 @@ class QuestionRequest(BaseModel):
 
 @app.post("/ask")
 async def ask_question(req: QuestionRequest):
+    global global_chunks, parent_store
     # 1. 加载已有的向量数据库
     if not os.path.exists(VECTORDB_DIR):
         return {"answer": "请先上传 PDF 文件构建知识库。"}
-    # 1. 初始化稠密检索器 (向量检索)
-    vector_db = Chroma(persist_directory=VECTORDB_DIR, embedding_function=EMBEDDING_MODEL)
-    vector_retriever = vector_db.as_retriever(search_kwargs={"k": 3})
 
-    # 2. 初始化稀疏检索器 (BM25 关键词检索)
-    # 传入分词函数 preprocess_func
-    bm25_retriever = BM25Retriever.from_documents(global_chunks, preprocess_func=jieba_preprocess_func)
-    bm25_retriever.k = 3
-
-    # 3. 构建混合检索器
-    # weights=[0.5, 0.5] 表示 BM25 和向量检索的权重各占一半，可根据实际效果调整
-    ensemble_retriever = EnsembleRetriever(
-        retrievers=[bm25_retriever, vector_retriever],
-        weights=[0.5, 0.5]
-    )
-    # 3. 构建 RAG 链
-    rag_chain = (
-            {"context": ensemble_retriever | format_docs, "question": RunnablePassthrough()}
-            | prompt
-            | LLM_MODEL
-            | StrOutputParser()
-    )
-    # 4. 调用链并获取回答 (注意这里使用 req.question)
     try:
+        # === 方案1：父子文档检索 + BM25 混合检索（推荐）===
+
+        # 2.重新加载向量数据库
+        vector_db = Chroma(
+            collection_name="parent_child_db",
+            embedding_function=EMBEDDING_MODEL,
+            persist_directory=VECTORDB_DIR
+        )
+
+        # 3. 重建父子分割器
+        parent_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=30)
+
+        # 4. 重新加载持久化的父文档存储
+        parent_store = create_kv_docstore(LocalFileStore(DOCSTORE_DIR))
+
+        # 5. 重建真正的父子检索器
+        parent_retriever = ParentDocumentRetriever(
+            vectorstore=vector_db,
+            docstore=parent_store,
+            child_splitter=child_splitter,
+            parent_splitter=parent_splitter,
+        )
+        # 6. 创建 BM25 检索器（用于关键词匹配）- 添加空值检查与本地加载
+        # 在 /ask 路由内部
+        if not global_chunks:
+            if os.path.exists(BM25_CHUNKS_FILE):
+                with open(BM25_CHUNKS_FILE, 'rb') as file_obj:
+                    global_chunks = pickle.load(file_obj)
+                print(f"✅ 从本地重新加载 {len(global_chunks)} 个 BM25 文档块")
+            else:
+                print("⚠️ BM25 文档块为空，且无本地缓存，仅使用父子检索器")
+
+        if not global_chunks:
+            retrieved_docs = parent_retriever.invoke(req.question)
+            # 只使用父子检索器，不使用混合检索器
+        else:
+            bm25_retriever = BM25Retriever.from_documents(
+                global_chunks,
+                preprocess_func=jieba_preprocess_func
+            )
+            bm25_retriever.k = 3
+
+            # 构建混合检索器（父子检索 + BM25）
+            ensemble_retriever = EnsembleRetriever(
+                retrievers=[bm25_retriever, parent_retriever],
+                weights=[0.4, 0.6]  # BM25占40%，父子检索占60%
+            )
+            print(f"✅ 使用混合检索器（BM25: {len(global_chunks)} 个文档块）")
+
+            # 检索文档
+            retrieved_docs = ensemble_retriever.invoke(req.question)
+
+        # 7. 格式化文档
+        context = format_docs(retrieved_docs)
+
+        # 8. 构建 RAG 链
+        rag_chain = (
+                {"context": lambda _: context, "question": RunnablePassthrough()}
+                | prompt
+                | LLM_MODEL
+                | StrOutputParser()
+        )
+
         answer = rag_chain.invoke(req.question)
         return {"answer": answer}
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # 打印完整错误信息便于调试
         return {"answer": f"生成回答时出错：{str(e)}"}
 
 if __name__ == "__main__":
