@@ -37,14 +37,14 @@ def safe_invoke(llm, prompt_value, max_retries=5, base_wait=2.0):
 
 # ================= 配置 =================
 # ⚠️ 改成你的真实 key,或者用环境变量(os.getenv("ZHIPUAI_API_KEY"))
-os.environ["ZHIPUAI_API_KEY"] = os.getenv("ZHIPUAI_API_KEY", "c28067c108d442b9b2f06334d5002d41.veZRK4S1AmB4USdJ")
+os.environ["ZHIPUAI_API_KEY"] = os.getenv("ZHIPUAI_API_KEY", "你的智谱AP")
 VECTORDB_DIR = "./chroma_db"
 BM25_CHUNKS_FILE = "./bm25_chunks.pkl"
 
 EMBEDDING_MODEL = ZhipuAIEmbeddings(model="embedding-2")
 # Judge 使用 glm-4-flashx（Flash 升级版，免费且能力更强），
 # 与生成模型 glm-4-flash 区分，避免同模型自评偏差
-JUDGE_LLM = ChatZhipuAI(model="glm-4-flash", temperature=0)
+JUDGE_LLM = ChatZhipuAI(model="glm-4-flashx")
 
 # ================= 加载检索器 =================
 def jieba_preprocess_func(text):
