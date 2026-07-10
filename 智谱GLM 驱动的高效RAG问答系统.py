@@ -77,7 +77,7 @@ def split_by_articles(documents, chunk_size=800, chunk_overlap=80):
 
 app = FastAPI()
 # 配置环境变量（请替换为你的实际 Key）
-os.environ["ZHIPUAI_API_KEY"] = "c28067c108d442b9b2f06334d5002d41.veZRK4S1AmB4USdJ"
+os.environ["ZHIPUAI_API_KEY"] = "你的智谱API"
 VECTORDB_DIR = "./chroma_db"
 BM25_CHUNKS_FILE = "./bm25_chunks.pkl"
 EMBEDDING_MODEL = ZhipuAIEmbeddings(model="embedding-2")
